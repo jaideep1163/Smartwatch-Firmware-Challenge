@@ -12,28 +12,10 @@ void setup() {
   pinMode(PIN_CROWN, INPUT_PULLUP);
   pinMode(PIN_TOUCH, INPUT_PULLUP);
 
-  // Read the checkpoint BEFORE wiping the state
-  Checkpoint saved = S.ckpt;
-  bool valid = ckptValid(saved);
-
-  engineReset(S);                      // also invalidates the old checkpoint
-  S.mode = MODE_ACTIVE;
-  if (valid) {
-    S.sampleCount = saved.sampleIndex;
-    S.runAvg   = saved.rollingAvg;
-    S.avgQ     = (uint32_t)saved.rollingAvg << AVG_SHIFT;
-    S.floorAvg = saved.floorAvg;
-    S.floorQ   = (uint32_t)saved.floorAvg << FLOOR_SHIFT;
-    S.started  = 1;
-    Serial.print("[BOOT] checkpoint VALID -> resuming from sample ");
-    Serial.println(saved.sampleIndex);
-  } else {
-    Serial.println("[BOOT] checkpoint INVALID -> starting from sample 0");
-  }
+  restoreFromCheckpoint(S);            // resume or start fresh
 
   memReport();
 
-  S.nextSampleUs = micros();
   attachInterrupt(PIN_CROWN, crownISR, FALLING);
 }
 
@@ -45,8 +27,10 @@ void loop() {
 
   if (S.flags & FLAG_CROWN) {
     S.flags = 0;
-    brownout(S, nowMs);
-    return;
+    if ((uint32_t)(nowMs - S.bootAtMs) > 300) {    // ignore button bounce right after a restart
+      brownout(S, nowMs);
+      return;
+    }
   }
 
   taskTouch(S, nowMs);

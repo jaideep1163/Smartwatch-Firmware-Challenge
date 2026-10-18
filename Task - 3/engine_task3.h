@@ -14,6 +14,10 @@
 #include <stdint.h>
 #include <string.h>
 
+// 0 = restart in place after a brownout (works in Wokwi)
+// 1 = real watchdog reset via rp2040.reboot() (EngineState kept in no-init RAM)
+#define USE_HW_REBOOT 0
+
 #ifndef __uninitialized_ram
 #define __uninitialized_ram(group) __attribute__((section(".uninitialized_data." #group))) group
 #endif
@@ -67,6 +71,7 @@ struct EngineState {
   uint32_t avgQ;
   uint32_t nextSampleUs;
   uint32_t haltAt;
+  uint32_t bootAtMs;           // time of the last (re)start
 
   Checkpoint ckpt;
 
@@ -86,7 +91,11 @@ struct EngineState {
 static_assert(sizeof(EngineState) <= 512, "EngineState too large");
 static_assert(sizeof(EngineState::pulseBuf) < 64, "Raw pulse buffer must be < 64 bytes");
 
+#if USE_HW_REBOOT
 static EngineState __uninitialized_ram(S);
+#else
+static EngineState S;
+#endif
 
 // ---------------- Helpers ----------------
 static inline void wr(uint8_t pin, uint8_t v) { digitalWrite(pin, v ? HIGH : LOW); }
@@ -188,14 +197,42 @@ static void brownout(EngineState &s, uint32_t nowMs) {
   Serial.println(" -> HALTED. Release, then press crown again to restore power.");
 }
 
+// Re-initialise everything from the checkpoint. Used at power-up AND for the
+// restart after a brownout. Valid checkpoint -> resume; invalid -> sample 0.
+static void restoreFromCheckpoint(EngineState &s) {
+  Checkpoint saved = s.ckpt;           // read BEFORE wiping the state
+  bool valid = ckptValid(saved);
+
+  engineReset(s);
+  s.mode = MODE_ACTIVE;
+  if (valid) {
+    s.sampleCount = saved.sampleIndex;
+    s.runAvg   = saved.rollingAvg;
+    s.avgQ     = (uint32_t)saved.rollingAvg << AVG_SHIFT;
+    s.floorAvg = saved.floorAvg;
+    s.floorQ   = (uint32_t)saved.floorAvg << FLOOR_SHIFT;
+    s.started  = 1;
+    Serial.print("[BOOT] checkpoint VALID -> resuming from sample ");
+    Serial.println(saved.sampleIndex);
+  } else {
+    Serial.println("[BOOT] checkpoint INVALID -> starting from sample 0");
+  }
+  s.nextSampleUs = micros();
+  s.bootAtMs = millis();
+}
+
 static void taskHalted(EngineState &s, uint32_t nowMs) {
   uint8_t pressed = (digitalRead(PIN_CROWN) == LOW);
   if (!s.crownReleased) {
     if (!pressed && (uint32_t)(nowMs - s.haltAt) >= 200) s.crownReleased = 1;
   } else if (pressed) {
-    Serial.println("Power restored: rebooting...");
+    Serial.println("Power restored: restarting...");
+#if USE_HW_REBOOT
     Serial.flush();
-    rp2040.reboot();                    // watchdog reboot: RAM contents survive
+    rp2040.reboot();                    // real watchdog reset, RAM survives
+#else
+    restoreFromCheckpoint(s);           // in-place restart (works in Wokwi)
+#endif
   }
 }
 
@@ -204,4 +241,3 @@ static void ledOutput(const EngineState &s) {
   wr(PIN_LED_R, s.ledR);
   wr(PIN_LED_B, s.ledB);
 }
-
