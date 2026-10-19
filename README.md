@@ -113,4 +113,4 @@ The sizes are also printed at boot so they can be checked against the running fi
 
 ## Author
 
-Jaideep (jaideep1163@gmail.com)
+Jaideep (jaideepmudigolam.261ec224@nitk.edu.in)
